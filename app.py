@@ -11,6 +11,7 @@ Controls:
 import tkinter as tk
 import copy
 import json
+import os
 from tkinter import filedialog, messagebox
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -210,17 +211,13 @@ class TetrominoApp:
                 activeforeground="white",
             ).pack(fill=tk.X, pady=4)
 
+        # Group 1: board editing / deletion
         _make_btn(btn_panel, "Clear Grid", self._clear_grid, "#e94560", "#b83048")
-        _make_btn(btn_panel, "Save Board", self._save_board, "#2850c8", "#1a3a90")
-        _make_btn(btn_panel, "Load Board", self._load_board, "#00a000", "#007000")
-        _make_btn(btn_panel, "Lock Selected", self._lock_selected, "#b08400", "#8a6500")
         _make_btn(
-            btn_panel, "Unlock Selected", self._unlock_selected, "#c86000", "#a04800"
+            btn_panel, "Group Selected", self._lock_selected, "#b08400", "#8a6500"
         )
-
-        # ── Trash bin ────────────────────────────────────────────────────────
-        tk.Label(btn_panel, text="──────────", bg="#12121e", fg="#2a2a44").pack(
-            pady=(6, 4)
+        _make_btn(
+            btn_panel, "Un-Group Selected", self._unlock_selected, "#c86000", "#a04800"
         )
 
         self.trash_canvas = tk.Canvas(
@@ -232,8 +229,18 @@ class TetrominoApp:
             highlightbackground="#4a1a1a",
             cursor="X_cursor",
         )
-        self.trash_canvas.pack(fill=tk.X, pady=4)
+        self.trash_canvas.pack(fill=tk.X, pady=(6, 6))
         self._draw_trash(hovering=False)
+
+        # Group 2: file operations
+        tk.Label(btn_panel, text="──────────", bg="#12121e", fg="#2a2a44").pack(
+            pady=(2, 4)
+        )
+        _make_btn(btn_panel, "Save Board", self._save_board, "#2850c8", "#1a3a90")
+        _make_btn(btn_panel, "Load Board", self._load_board, "#00a000", "#007000")
+        _make_btn(
+            btn_panel, "Export to SVG", self._export_grid_image, "#444488", "#303066"
+        )
 
         # ── Controls help ─────────────────────────────────────────────────
         tk.Label(btn_panel, text="──────────", bg="#12121e", fg="#2a2a44").pack(
@@ -769,6 +776,13 @@ class TetrominoApp:
                         if name in self.stock:
                             self.stock[name] += 1
                             self._refresh_palette(name)
+                else:
+                    # Palette/copy drag dropped on trash: refund reserved stock.
+                    stock_costs = self.drag_piece.get("stock_costs", {})
+                    for name, amount in stock_costs.items():
+                        if name in self.stock:
+                            self.stock[name] += amount
+                            self._refresh_palette(name)
                 placed = True
             elif self._is_over_grid(x, y):
                 col, row = self._snap_pos(x, y)
@@ -880,7 +894,7 @@ class TetrominoApp:
     def _lock_selected(self):
         if len(self.selected_piece_ids) < 2:
             messagebox.showinfo(
-                "Lock Selected", "Select at least 2 tetrominoes with Ctrl+click."
+                "Group Selected", "Select at least 2 tetrominoes with Ctrl+click."
             )
             return
         self._push_undo()
@@ -894,7 +908,7 @@ class TetrominoApp:
     def _unlock_selected(self):
         if not self.selected_piece_ids:
             messagebox.showinfo(
-                "Unlock Selected", "Select at least 1 tetromino to unlock."
+                "Un-Group Selected", "Select at least 1 tetromino to ungroup."
             )
             return
         self._push_undo()
@@ -1095,6 +1109,90 @@ class TetrominoApp:
                 json.dump(board_data, f, indent=2)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save board:\n{str(e)}")
+
+    def _export_grid_image(self):
+        """Export the grid to an SVG file."""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".svg",
+            filetypes=[("SVG image", "*.svg")],
+            initialfile="tetromino_grid.svg",
+        )
+        if not file_path:
+            return
+
+        if os.path.splitext(file_path)[1].lower() != ".svg":
+            file_path = file_path + ".svg"
+
+        w = GRID_COLS * self.CELL_SIZE
+        h = GRID_ROWS * self.CELL_SIZE
+
+        lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+            f'<rect x="0" y="0" width="{w}" height="{h}" fill="#080810"/>',
+        ]
+
+        # Grid lines
+        for c in range(GRID_COLS + 1):
+            x = c * self.CELL_SIZE
+            lines.append(
+                f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#14142a" stroke-width="1"/>'
+            )
+        for r in range(GRID_ROWS + 1):
+            y = r * self.CELL_SIZE
+            lines.append(
+                f'<line x1="0" y1="{y}" x2="{w}" y2="{y}" stroke="#14142a" stroke-width="1"/>'
+            )
+
+        # Placed cells
+        for r in range(GRID_ROWS):
+            for c in range(GRID_COLS):
+                color = self.grid[r][c]
+                if color:
+                    x = c * self.CELL_SIZE + 1
+                    y = r * self.CELL_SIZE + 1
+                    sz = self.CELL_SIZE - 2
+                    lines.append(
+                        f'<rect x="{x}" y="{y}" width="{sz}" height="{sz}" fill="{color}" stroke="#3a3a5a" stroke-width="1"/>'
+                    )
+
+        # Lock group outlines (outer boundary only)
+        group_cells: dict[int, set[tuple[int, int]]] = {}
+        for r in range(GRID_ROWS):
+            for c in range(GRID_COLS):
+                piece_id = self.grid_ids[r][c]
+                if piece_id is not None:
+                    group_id = self.piece_group.get(piece_id)
+                    if group_id is not None:
+                        group_cells.setdefault(group_id, set()).add((r, c))
+
+        for cells in group_cells.values():
+            for r, c in cells:
+                x1 = c * self.CELL_SIZE
+                y1 = r * self.CELL_SIZE
+                x2 = x1 + self.CELL_SIZE
+                y2 = y1 + self.CELL_SIZE
+
+                if (r - 1, c) not in cells:
+                    lines.append(
+                        f'<line x1="{x1 + 1}" y1="{y1 + 1}" x2="{x2 - 1}" y2="{y1 + 1}" stroke="#ffffff" stroke-width="2"/>'
+                    )
+                if (r + 1, c) not in cells:
+                    lines.append(
+                        f'<line x1="{x1 + 1}" y1="{y2 - 1}" x2="{x2 - 1}" y2="{y2 - 1}" stroke="#ffffff" stroke-width="2"/>'
+                    )
+                if (r, c - 1) not in cells:
+                    lines.append(
+                        f'<line x1="{x1 + 1}" y1="{y1 + 1}" x2="{x1 + 1}" y2="{y2 - 1}" stroke="#ffffff" stroke-width="2"/>'
+                    )
+                if (r, c + 1) not in cells:
+                    lines.append(
+                        f'<line x1="{x2 - 1}" y1="{y1 + 1}" x2="{x2 - 1}" y2="{y2 - 1}" stroke="#ffffff" stroke-width="2"/>'
+                    )
+
+        lines.append("</svg>")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
     def _load_board(self):
         """Load a board state from a JSON file."""
