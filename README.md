@@ -1,4 +1,4 @@
-To start the Tetronimo desktop app:
+To start the Tetromino desktop app:
 
 `python app.py`
 
