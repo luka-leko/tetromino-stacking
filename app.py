@@ -588,6 +588,7 @@ class TetrominoApp:
             "cells": copy.deepcopy(cells),
             "piece_ids": set(),
             "stock_costs": {name: 1},
+            "copy_group_by_key": {},
         }
         self._drag_lifted_cells = []
         self._last_ghost_pos = None
@@ -663,6 +664,7 @@ class TetrominoApp:
             "cells": cells,
             "piece_ids": piece_ids,
             "stock_costs": {},
+            "copy_group_by_key": {},
         }
         self._last_ghost_pos = None
         self._last_trash_hover = False
@@ -805,6 +807,22 @@ class TetrominoApp:
                             piece_id = generated_ids[key]
                         self.grid[row + r][col + c] = color
                         self.grid_ids[row + r][col + c] = piece_id
+
+                    # Rebuild copied lock groups on the newly placed IDs.
+                    copy_group_by_key = self.drag_piece.get("copy_group_by_key", {})
+                    if copy_group_by_key:
+                        regroup: dict[int, list[int]] = {}
+                        for key, src_gid in copy_group_by_key.items():
+                            new_pid = generated_ids.get(key)
+                            if new_pid is not None:
+                                regroup.setdefault(src_gid, []).append(new_pid)
+
+                        for new_ids in regroup.values():
+                            if len(new_ids) >= 2:
+                                new_gid = self.next_group_id
+                                self.next_group_id += 1
+                                for pid in new_ids:
+                                    self.piece_group[pid] = new_gid
                     placed = True
 
             if not placed:
@@ -1017,14 +1035,20 @@ class TetrominoApp:
         min_r = min(r for r, _, _, _ in selected_cells)
         min_c = min(c for _, c, _, _ in selected_cells)
         cells = []
+        copy_group_by_key = {}
         for r, c, color, piece_id in selected_cells:
-            cells.append((r - min_r, c - min_c, color, -piece_id))
+            key = -piece_id
+            cells.append((r - min_r, c - min_c, color, key))
+            src_gid = self.piece_group.get(piece_id)
+            if src_gid is not None:
+                copy_group_by_key[key] = src_gid
 
         self.drag_piece = {
             "name": "",
             "cells": cells,
             "piece_ids": set(),
             "stock_costs": stock_costs,
+            "copy_group_by_key": copy_group_by_key,
         }
         self._drag_lifted_cells = []
         self._last_ghost_pos = None
