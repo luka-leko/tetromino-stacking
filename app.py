@@ -745,9 +745,12 @@ class TetrominoApp:
             else:
                 target_selection = {piece_id}
 
-            # Ctrl+Left Click adds clicked tetromino/group to current selection.
+            # Ctrl+Left Click toggles clicked tetromino/group in current selection.
             if self._grid_press_ctrl:
-                self.selected_piece_ids.update(target_selection)
+                if target_selection.issubset(self.selected_piece_ids):
+                    self.selected_piece_ids.difference_update(target_selection)
+                else:
+                    self.selected_piece_ids.update(target_selection)
             else:
                 # Left click selects one tetromino/group and clears prior selection.
                 if self.selected_piece_ids == target_selection:
