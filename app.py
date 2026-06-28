@@ -79,7 +79,16 @@ class TetrominoApp:
         self.root.title("Tetromino Stacking")
         self.root.configure(bg="#12121e")
         self.root.resizable(False, False)
-        self.root.state("zoomed")
+        try:
+            # Works on Windows; may fail on some Linux/WSL window managers.
+            self.root.state("zoomed")
+        except tk.TclError:
+            try:
+                # Supported by some X11/Wayland environments.
+                self.root.attributes("-zoomed", True)
+            except tk.TclError:
+                # Keep a normal window on environments without zoom support.
+                self.root.geometry("1366x900")
         self.root.update()  # Force update to get actual screen dimensions
 
         # Calculate dynamic CELL_SIZE based on screen dimensions
