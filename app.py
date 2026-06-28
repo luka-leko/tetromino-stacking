@@ -124,9 +124,11 @@ class TetrominoApp:
         self._grid_press_pos: tuple | None = None  # (col, row, x_root, y_root)
         self._grid_press_piece_id: int | None = None
         self._grid_press_ctrl: bool = False
-
-        # Clipboard for copy/paste
-        self.copied_cells: list[tuple[int, int, str, int]] | None = None
+        self._last_ghost_pos: tuple[int, int] | None = None
+        self._last_trash_hover: bool = False
+        self._last_drag_root_pos: tuple[int, int] | None = None
+        self._pending_drag_xy: tuple[int, int] | None = None
+        self._drag_update_queued: bool = False
 
         # Undo stack: list of snapshots
         self.undo_stack: list[dict] = []
@@ -139,6 +141,7 @@ class TetrominoApp:
         self.root.bind("<Button-3>", self._on_right_click_rotate)
         self.root.bind("<Control-c>", self._on_copy)
         self.root.bind("<Control-z>", self._on_undo)
+        self.root.bind("<Delete>", self._on_delete_selected)
 
     # ── UI construction ──────────────────────────────────────────────────────
 
@@ -241,8 +244,9 @@ class TetrominoApp:
             "[R] / RClick  Rotate",
             "Drag → place",
             "Click → select",
-            "Ctrl+C → copy",
+            "Ctrl+C → hold duplicate",
             "Ctrl+Z → undo",
+            "Delete → delete selected",
         ):
             tk.Label(
                 btn_panel,
@@ -506,6 +510,8 @@ class TetrominoApp:
         if self.drag_win:
             self.drag_win.destroy()
             self.drag_win = None
+        if not self.drag_piece:
+            return
 
         cells = self.drag_piece["cells"]
         rows_n, cols_n = self._cells_bounds(cells)
@@ -517,9 +523,16 @@ class TetrominoApp:
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.78)
         win.geometry(f"{w}x{h}+{x_root - ox}+{y_root - oy}")
+        self._last_drag_root_pos = (x_root, y_root)
 
         cv = tk.Canvas(win, width=w, height=h, bg="black", highlightthickness=0)
         cv.pack()
+
+        # Let the floating preview handle motion/release so copied "held" pieces
+        # can be moved and dropped naturally.
+        win.bind("<Motion>", self._on_drag_motion)
+        win.bind("<ButtonRelease-1>", self._on_drag_release)
+        cv.bind("<ButtonRelease-1>", self._on_drag_release)
 
         for r, c, color, _ in cells:
             x1, y1 = c * self.CELL_SIZE, r * self.CELL_SIZE
@@ -543,8 +556,11 @@ class TetrominoApp:
         self.drag_win = win
 
     def _move_drag_window(self, x_root: int, y_root: int):
-        if not self.drag_win:
+        if not self.drag_win or not self.drag_piece:
             return
+        if self._last_drag_root_pos == (x_root, y_root):
+            return
+        self._last_drag_root_pos = (x_root, y_root)
         cells = self.drag_piece["cells"]
         rows_n, cols_n = self._cells_bounds(cells)
         ox = (cols_n * self.CELL_SIZE) // 2
@@ -564,8 +580,11 @@ class TetrominoApp:
             "name": name,
             "cells": copy.deepcopy(cells),
             "piece_ids": set(),
+            "stock_costs": {name: 1},
         }
         self._drag_lifted_cells = []
+        self._last_ghost_pos = None
+        self._last_trash_hover = False
         self._create_drag_window(event.x_root, event.y_root)
 
     def _start_grid_drag(self, event: tk.Event):
@@ -636,11 +655,18 @@ class TetrominoApp:
             "name": COLOR_TO_NAME.get(color, ""),
             "cells": cells,
             "piece_ids": piece_ids,
+            "stock_costs": {},
         }
+        self._last_ghost_pos = None
+        self._last_trash_hover = False
         self._create_drag_window(event.x_root, event.y_root)
 
     def _on_drag_motion(self, event: tk.Event):
-        if not self.drag_piece and self._grid_press_piece_id is not None:
+        if (
+            not self.drag_piece
+            and self._grid_press_piece_id is not None
+            and self._grid_press_pos is not None
+        ):
             # Check if we've moved enough to start dragging
             start_col, start_row, start_x_root, start_y_root = self._grid_press_pos
             threshold = self.CELL_SIZE // 3  # Movement threshold
@@ -653,18 +679,43 @@ class TetrominoApp:
 
         if not self.drag_piece:
             return
-        x, y = event.x_root, event.y_root
+
+        self._pending_drag_xy = (event.x_root, event.y_root)
+        if self._drag_update_queued:
+            return
+        self._drag_update_queued = True
+        self.root.after_idle(self._flush_drag_motion)
+
+    def _flush_drag_motion(self):
+        self._drag_update_queued = False
+        if not self.drag_piece or self._pending_drag_xy is None:
+            return
+
+        x, y = self._pending_drag_xy
+        self._pending_drag_xy = None
         self._move_drag_window(x, y)
         if self._is_over_grid(x, y):
             col, row = self._snap_pos(x, y)
-            self._draw_ghost(col, row)
-            self._draw_trash(hovering=False)
+            if self._last_ghost_pos != (col, row):
+                self._draw_ghost(col, row)
+                self._last_ghost_pos = (col, row)
+            if self._last_trash_hover:
+                self._draw_trash(hovering=False)
+                self._last_trash_hover = False
         elif self._is_over_trash(x, y):
-            self.grid_canvas.delete("ghost")
-            self._draw_trash(hovering=True)
+            if self._last_ghost_pos is not None:
+                self.grid_canvas.delete("ghost")
+                self._last_ghost_pos = None
+            if not self._last_trash_hover:
+                self._draw_trash(hovering=True)
+                self._last_trash_hover = True
         else:
-            self.grid_canvas.delete("ghost")
-            self._draw_trash(hovering=False)
+            if self._last_ghost_pos is not None:
+                self.grid_canvas.delete("ghost")
+                self._last_ghost_pos = None
+            if self._last_trash_hover:
+                self._draw_trash(hovering=False)
+                self._last_trash_hover = False
 
     def _push_undo(self):
         """Snapshot current mutable state onto the undo stack (max 50 entries)."""
@@ -723,13 +774,21 @@ class TetrominoApp:
                 col, row = self._snap_pos(x, y)
                 cells = self.drag_piece["cells"]
                 if self._can_place_cells(cells, col, row):
-                    none_piece_id = None
+                    generated_ids = {}
                     for r, c, color, piece_id in cells:
+                        # New pieces (palette or copied cells) receive fresh IDs on drop.
                         if piece_id is None:
-                            if none_piece_id is None:
-                                none_piece_id = self.next_piece_id
+                            key = "palette"
+                        elif isinstance(piece_id, int) and piece_id < 0:
+                            key = piece_id
+                        else:
+                            key = None
+
+                        if key is not None:
+                            if key not in generated_ids:
+                                generated_ids[key] = self.next_piece_id
                                 self.next_piece_id += 1
-                            piece_id = none_piece_id
+                            piece_id = generated_ids[key]
                         self.grid[row + r][col + c] = color
                         self.grid_ids[row + r][col + c] = piece_id
                     placed = True
@@ -741,16 +800,22 @@ class TetrominoApp:
                         self.grid[r][c] = color
                         self.grid_ids[r][c] = piece_id
                 else:
-                    # Return palette piece to stock (palette drag that didn't land)
-                    name = self.drag_piece.get("name", "")
-                    if name in self.stock:
-                        self.stock[name] += 1
-                        self._refresh_palette(name)
+                    # Return reserved stock for palette/copy drags that didn't land.
+                    stock_costs = self.drag_piece.get("stock_costs", {})
+                    for name, amount in stock_costs.items():
+                        if name in self.stock:
+                            self.stock[name] += amount
+                            self._refresh_palette(name)
 
             self._drag_lifted_cells = []
             self._redraw_grid()
             self._draw_trash(hovering=False)
             self.grid_canvas.delete("ghost")
+            self._last_ghost_pos = None
+            self._last_trash_hover = False
+            self._last_drag_root_pos = None
+            self._pending_drag_xy = None
+            self._drag_update_queued = False
             if self.drag_win:
                 self.drag_win.destroy()
                 self.drag_win = None
@@ -839,35 +904,125 @@ class TetrominoApp:
         self.selected_piece_ids.clear()
         self._redraw_grid()
 
-    def _on_copy(self, event=None):
-        """Copy the selected tetrominoes to clipboard."""
-        if not self.selected_piece_ids:
-            messagebox.showinfo("Copy", "Select at least 1 tetromino to copy.")
-            return
+    def _on_delete_selected(self, event=None):
+        """Delete selected tetrominoes from the grid and return their stock."""
+        if self.drag_piece or not self.selected_piece_ids:
+            return "break"
 
-        # Collect all cells for the selected piece_ids
-        lifted = []
+        # Only delete IDs that currently exist on the grid.
+        selected_on_grid = set()
         for r in range(GRID_ROWS):
             for c in range(GRID_COLS):
                 pid = self.grid_ids[r][c]
                 if pid in self.selected_piece_ids:
-                    lifted.append((r, c, self.grid[r][c], pid))
+                    selected_on_grid.add(pid)
 
-        if not lifted:
-            messagebox.showinfo("Copy", "Selected tetrominoes not found on grid.")
-            return
+        if not selected_on_grid:
+            self.selected_piece_ids.clear()
+            self._redraw_grid()
+            return "break"
 
-        # Normalize coordinates to bounding box
-        min_r = min(r for r, _, _, _ in lifted)
-        min_c = min(c for _, c, _, _ in lifted)
+        self._push_undo()
+
+        # Return one stock count per deleted tetromino.
+        for pid in selected_on_grid:
+            found_color = None
+            for r in range(GRID_ROWS):
+                for c in range(GRID_COLS):
+                    if self.grid_ids[r][c] == pid:
+                        found_color = self.grid[r][c]
+                        break
+                if found_color is not None:
+                    break
+            if found_color in COLOR_TO_NAME:
+                name = COLOR_TO_NAME[found_color]
+                self.stock[name] += 1
+                self._refresh_palette(name)
+
+        # Remove selected cells and their group mappings.
+        for r in range(GRID_ROWS):
+            for c in range(GRID_COLS):
+                if self.grid_ids[r][c] in selected_on_grid:
+                    self.grid[r][c] = None
+                    self.grid_ids[r][c] = None
+
+        for pid in selected_on_grid:
+            self.piece_group.pop(pid, None)
+
+        self.selected_piece_ids.clear()
+        self._redraw_grid()
+        return "break"
+
+    def _on_copy(self, event=None):
+        """Create a duplicate of selected tetrominoes and hold it for placement."""
+        if self.drag_piece or not self.selected_piece_ids:
+            return "break"
+
+        # Collect all cells for selected piece IDs.
+        selected_cells = []
+        for r in range(GRID_ROWS):
+            for c in range(GRID_COLS):
+                pid = self.grid_ids[r][c]
+                if pid in self.selected_piece_ids:
+                    selected_cells.append((r, c, self.grid[r][c], pid))
+
+        if not selected_cells:
+            return "break"
+
+        # Build per-piece color map and required stock for this copy action.
+        piece_colors = {}
+        for _, _, color, piece_id in selected_cells:
+            if piece_id not in piece_colors:
+                piece_colors[piece_id] = color
+
+        stock_costs = {}
+        for color in piece_colors.values():
+            name = COLOR_TO_NAME.get(color)
+            if name is not None:
+                stock_costs[name] = stock_costs.get(name, 0) + 1
+
+        missing = []
+        for name, amount in stock_costs.items():
+            if self.stock[name] < amount:
+                missing.append(f"{name}: need {amount}, have {self.stock[name]}")
+
+        if missing:
+            messagebox.showinfo(
+                "Copy Failed",
+                "Not enough tetrominoes in stock for this copy:\n" + "\n".join(missing),
+            )
+            return "break"
+
+        self._push_undo()
+        for name, amount in stock_costs.items():
+            self.stock[name] -= amount
+            self._refresh_palette(name)
+
+        # Normalize to bounding box and mark copied piece IDs as negative.
+        # Negative IDs are remapped to fresh IDs when dropped.
+        min_r = min(r for r, _, _, _ in selected_cells)
+        min_c = min(c for _, c, _, _ in selected_cells)
         cells = []
-        for r, c, color, piece_id in lifted:
-            cells.append((r - min_r, c - min_c, color, piece_id))
+        for r, c, color, piece_id in selected_cells:
+            cells.append((r - min_r, c - min_c, color, -piece_id))
 
-        self.copied_cells = cells
-        messagebox.showinfo(
-            "Copy", f"Copied {len(self.selected_piece_ids)} tetromino(s) to clipboard."
-        )
+        self.drag_piece = {
+            "name": "",
+            "cells": cells,
+            "piece_ids": set(),
+            "stock_costs": stock_costs,
+        }
+        self._drag_lifted_cells = []
+        self._last_ghost_pos = None
+        self._last_trash_hover = False
+
+        x = self.root.winfo_pointerx()
+        y = self.root.winfo_pointery()
+        self._create_drag_window(x, y)
+        if self._is_over_grid(x, y):
+            col, row = self._snap_pos(x, y)
+            self._draw_ghost(col, row)
+        return "break"
 
     def _refresh_palette(self, name: str):
         """Update the counter label and visual state for one palette piece."""
