@@ -123,6 +123,7 @@ class TetrominoApp:
         )  # original positions if lifted from grid
         self._grid_press_pos: tuple | None = None  # (col, row, x_root, y_root)
         self._grid_press_piece_id: int | None = None
+        self._grid_press_ctrl: bool = False
 
         # Clipboard for copy/paste
         self.copied_cells: list[tuple[int, int, str, int]] | None = None
@@ -552,26 +553,33 @@ class TetrominoApp:
         if not (0 <= col < GRID_COLS and 0 <= row < GRID_ROWS):
             self._grid_press_pos = None
             self._grid_press_piece_id = None
+            self._grid_press_ctrl = False
             return
 
         piece_id = self.grid_ids[row][col]
         if piece_id is None:
             self._grid_press_pos = None
             self._grid_press_piece_id = None
+            self._grid_press_ctrl = False
             return
 
         # Record for potential drag or click
         self._grid_press_pos = (col, row, event.x_root, event.y_root)
         self._grid_press_piece_id = piece_id
+        self._grid_press_ctrl = bool(event.state & 0x0004)
 
     def _initiate_grid_drag(self, piece_id: int, event: tk.Event):
         """Actually start dragging the piece from the grid."""
         piece_ids = {piece_id}
-        group_id = self.piece_group.get(piece_id)
-        if group_id is not None:
-            piece_ids = {
-                pid for pid, gid in self.piece_group.items() if gid == group_id
-            }
+        if len(self.selected_piece_ids) > 1 and piece_id in self.selected_piece_ids:
+            # If dragging starts on a selected piece, move the full selection together.
+            piece_ids = set(self.selected_piece_ids)
+        else:
+            group_id = self.piece_group.get(piece_id)
+            if group_id is not None:
+                piece_ids = {
+                    pid for pid, gid in self.piece_group.items() if gid == group_id
+                }
 
         # Collect all cells that belong to the dragged piece(s)
         lifted = []
@@ -726,29 +734,31 @@ class TetrominoApp:
                 self.drag_win = None
             self.drag_piece = None
         elif self._grid_press_piece_id is not None:
-            # No drag happened, this was just a click - toggle selection
+            # No drag happened, this was just a click - replace selection
             piece_id = self._grid_press_piece_id
             group_id = self.piece_group.get(piece_id)
 
             if group_id is not None:
-                # Select/deselect the whole group
-                group_piece_ids = {
+                target_selection = {
                     pid for pid, gid in self.piece_group.items() if gid == group_id
                 }
-                if group_piece_ids.issubset(self.selected_piece_ids):
-                    self.selected_piece_ids.difference_update(group_piece_ids)
-                else:
-                    self.selected_piece_ids.update(group_piece_ids)
             else:
-                # Select/deselect just this piece
-                if piece_id in self.selected_piece_ids:
-                    self.selected_piece_ids.remove(piece_id)
+                target_selection = {piece_id}
+
+            # Ctrl+Left Click adds clicked tetromino/group to current selection.
+            if self._grid_press_ctrl:
+                self.selected_piece_ids.update(target_selection)
+            else:
+                # Left click selects one tetromino/group and clears prior selection.
+                if self.selected_piece_ids == target_selection:
+                    self.selected_piece_ids.clear()
                 else:
-                    self.selected_piece_ids.add(piece_id)
+                    self.selected_piece_ids = set(target_selection)
             self._redraw_grid()
 
         self._grid_press_pos = None
         self._grid_press_piece_id = None
+        self._grid_press_ctrl = False
 
     def _on_key_rotate(self, event: tk.Event):
         if not self.drag_piece:
