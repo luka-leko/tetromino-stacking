@@ -368,20 +368,42 @@ class TetrominoApp:
                 if color:
                     self._draw_cell(c, r, color, tags=())
 
-        # Lock group highlights
+        # Lock group highlights (draw only the outer boundary of each group)
+        group_cells: dict[int, set[tuple[int, int]]] = {}
         for r in range(GRID_ROWS):
             for c in range(GRID_COLS):
                 piece_id = self.grid_ids[r][c]
-                if piece_id is not None and piece_id in self.piece_group:
-                    x1, y1 = c * self.CELL_SIZE, r * self.CELL_SIZE
-                    x2, y2 = x1 + self.CELL_SIZE, y1 + self.CELL_SIZE
-                    self.grid_canvas.create_rectangle(
-                        x1 + 1,
-                        y1 + 1,
-                        x2 - 1,
-                        y2 - 1,
-                        outline="#9933ff",
-                        width=2,
+                if piece_id is not None:
+                    group_id = self.piece_group.get(piece_id)
+                    if group_id is not None:
+                        group_cells.setdefault(group_id, set()).add((r, c))
+
+        for cells in group_cells.values():
+            for r, c in cells:
+                x1 = c * self.CELL_SIZE
+                y1 = r * self.CELL_SIZE
+                x2 = x1 + self.CELL_SIZE
+                y2 = y1 + self.CELL_SIZE
+
+                # Top edge
+                if (r - 1, c) not in cells:
+                    self.grid_canvas.create_line(
+                        x1 + 1, y1 + 1, x2 - 1, y1 + 1, fill="#ffffff", width=2
+                    )
+                # Bottom edge
+                if (r + 1, c) not in cells:
+                    self.grid_canvas.create_line(
+                        x1 + 1, y2 - 1, x2 - 1, y2 - 1, fill="#ffffff", width=2
+                    )
+                # Left edge
+                if (r, c - 1) not in cells:
+                    self.grid_canvas.create_line(
+                        x1 + 1, y1 + 1, x1 + 1, y2 - 1, fill="#ffffff", width=2
+                    )
+                # Right edge
+                if (r, c + 1) not in cells:
+                    self.grid_canvas.create_line(
+                        x2 - 1, y1 + 1, x2 - 1, y2 - 1, fill="#ffffff", width=2
                     )
 
         # Selection highlights
